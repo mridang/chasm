@@ -22,7 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # These two crates are exact-version-pinned because they both moved to rand 0.9
 # in later releases, and chasm-faker depends on rand 0.8 ABI throughout.
 # Bumping requires updating chasm-faker/src/random.rs to use rand 0.9 idioms.
-fake = { version = "=2.10.0", features = ["chrono", "http", "random_color"] }
+fake = { version = "=5.1.0", features = ["chrono", "http", "random_color"] }
 thiserror = { workspace = true }
 rand_regex = "=0.17.0"
 tracing = { workspace = true }
