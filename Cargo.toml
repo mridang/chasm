@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/chasm-faker",
+    "crates/chasm-engine",
+    "crates/chasm-server",
+    "crates/chasm-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/mridang/chasm"
+authors = ["Mridang Agarwalla <mridang.agarwalla@gmail.com>"]
+homepage = "https://github.com/mridang/chasm"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+indexmap = "2"
+regex = "1"
+tracing = "0.1"
+percent-encoding = "2"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+overflow-checks = false

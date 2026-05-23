@@ -1,0 +1,70 @@
+openapi: 3.0.3
+info:
+  title: Auth example
+  version: 1.0.0
+  description: |
+    Minimal spec exercising the three HTTP-level security schemes chasm
+    understands: bearer JWT, header apiKey, and HTTP Basic.
+servers:
+  - url: http://localhost:4010
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    basicAuth:
+      type: http
+      scheme: basic
+  schemas:
+    Whoami:
+      type: object
+      required: [subject]
+      properties:
+        subject:
+          type: string
+          example: alice
+paths:
+  /bearer/whoami:
+    get:
+      operationId: whoamiBearer
+      summary: Identify the caller via bearer JWT.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Caller identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Whoami'
+  /apikey/whoami:
+    get:
+      operationId: whoamiApiKey
+      summary: Identify the caller via the X-API-Key header.
+      security:
+        - apiKeyAuth: []
+      responses:
+        '200':
+          description: Caller identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Whoami'
+  /basic/whoami:
+    get:
+      operationId: whoamiBasic
+      summary: Identify the caller via HTTP Basic.
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Caller identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Whoami'

@@ -1,0 +1,15 @@
+/target
+debug/
+target/
+**/*.rs.bk
+*.pdb
+.devbox
+.rustup
+/.cargo/
+dist/
+*.swp
+.DS_Store
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.shared.json

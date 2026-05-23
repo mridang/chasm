@@ -1,0 +1,41 @@
+[package]
+name = "chasm-server"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+description = "Axum HTTP binary serving OAS3-driven mocks."
+keywords = ["openapi", "mock", "oas3", "axum", "server"]
+categories = ["development-tools::testing", "web-programming::http-server"]
+readme = "../../README.md"
+publish = false
+
+[[bin]]
+name = "chasm-server"
+path = "src/main.rs"
+
+[dependencies]
+chasm-engine = { path = "../chasm-engine" }
+axum = { version = "0.7", features = ["http2"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br", "timeout"] }
+tower = { version = "0.5", features = ["limit"] }
+form_urlencoded = "1"
+percent-encoding = { workspace = true }
+notify = "6"
+uuid = { version = "1", features = ["v4"] }
+blake3 = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+chasm-faker = { path = "../chasm-faker" }

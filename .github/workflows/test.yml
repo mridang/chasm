@@ -1,0 +1,62 @@
+name: Run Tests
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ./
+
+jobs:
+  app-testing:
+    name: Workspace tests
+    runs-on: ubuntu-latest
+    # No feature matrix: the workspace no longer declares any `[features]`
+    # blocks after the vapor-flag removal, so `--all-features`,
+    # `--no-default-features`, and the default invocation all compile
+    # identical code. Re-introduce the matrix only if a crate gains a
+    # real, code-gating feature.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          key: tests
+
+      - name: Run Tests
+        run: cargo test --workspace --exclude chasm-wasm --locked
+
+  wasm-build:
+    name: WASM build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          key: wasm
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa  # v0.4.0
+        with:
+          version: latest
+
+      - name: Build WASM package
+        run: wasm-pack build crates/chasm-wasm --target bundler --out-dir ../../dist/wasm
