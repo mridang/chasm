@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 chasm-engine = { path = "../chasm-engine" }
 axum = { version = "0.7", features = ["http2"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
 clap = { version = "4", features = ["derive", "env"] }
