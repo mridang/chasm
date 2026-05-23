@@ -16,7 +16,7 @@ publish = false
 [dependencies]
 serde_json = { workspace = true }
 rand = "0.8"
-rand_chacha = "0.3"
+rand_chacha = "0.9"
 regex = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 # These two crates are exact-version-pinned because they both moved to rand 0.9

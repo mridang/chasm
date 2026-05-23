@@ -382,7 +382,7 @@ dependencies = [
  "fake",
  "proptest",
  "rand 0.8.6",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "rand_regex",
  "regex",
  "serde_json",
