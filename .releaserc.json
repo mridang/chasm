@@ -1,0 +1,32 @@
+{
+  "branches": [
+    "master"
+  ],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@mridang/semantic-release-oci",
+      {
+        "dockerRegistry": "docker.io",
+        "dockerProject": "mridang",
+        "dockerImage": "chasm",
+        "dockerTags": ["latest", "{{major}}", "{{version}}"],
+        "dockerPlatform": ["linux/amd64", "linux/arm64"],
+        "dockerPublish": true
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": []
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ]
+  ]
+}

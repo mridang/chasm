@@ -1,0 +1,31 @@
+[package]
+name = "chasm-wasm"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+description = "wasm-bindgen bindings for chasm-engine — run OAS3 mocks in Node.js/browsers."
+keywords = ["openapi", "mock", "wasm", "wasm-bindgen", "oas3"]
+categories = ["development-tools::testing", "wasm"]
+readme = "../../README.md"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chasm-engine = { path = "../chasm-engine" }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+serde_json = { workspace = true }
+serde = { workspace = true }
+uuid = { version = "1", features = ["v4", "js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-O3', '--enable-bulk-memory']

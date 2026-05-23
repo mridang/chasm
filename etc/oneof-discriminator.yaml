@@ -1,0 +1,58 @@
+openapi: 3.0.3
+info:
+  title: oneOf + discriminator example
+  version: 1.0.0
+  description: |
+    Demonstrates `oneOf` payload generation driven by an explicit
+    `discriminator.propertyName`. chasm picks a branch deterministically
+    when seeded.
+servers:
+  - url: http://localhost:4010
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets across all subtypes.
+      responses:
+        '200':
+          description: A heterogeneous list of pets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      oneOf:
+        - $ref: '#/components/schemas/Cat'
+        - $ref: '#/components/schemas/Dog'
+        - $ref: '#/components/schemas/Bird'
+      discriminator:
+        propertyName: petType
+        mapping:
+          cat: '#/components/schemas/Cat'
+          dog: '#/components/schemas/Dog'
+          bird: '#/components/schemas/Bird'
+    Cat:
+      type: object
+      required: [petType, name, indoor]
+      properties:
+        petType: { type: string, enum: [cat] }
+        name: { type: string }
+        indoor: { type: boolean }
+    Dog:
+      type: object
+      required: [petType, name, breed]
+      properties:
+        petType: { type: string, enum: [dog] }
+        name: { type: string }
+        breed: { type: string }
+    Bird:
+      type: object
+      required: [petType, name, canFly]
+      properties:
+        petType: { type: string, enum: [bird] }
+        name: { type: string }
+        canFly: { type: boolean }

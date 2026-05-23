@@ -1,0 +1,32 @@
+openapi: 3.1.0
+info:
+  title: OAS 3.1 nullable example
+  version: 1.0.0
+  description: |
+    Exercises the OAS 3.1 `type: ["string", "null"]` idiom that replaces
+    the OAS 3.0 `nullable: true` keyword. chasm normalises both to the
+    same internal representation.
+servers:
+  - url: http://localhost:4010
+paths:
+  /user:
+    get:
+      operationId: getUser
+      summary: Fetch a user record with an optionally-null nickname.
+      responses:
+        '200':
+          description: A user record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+components:
+  schemas:
+    User:
+      type: object
+      required: [id, nickname]
+      properties:
+        id:
+          type: string
+        nickname:
+          type: ["string", "null"]
