@@ -13,8 +13,9 @@
         "dockerProject": "mridang",
         "dockerImage": "chasm",
         "dockerTags": ["latest", "{{major}}", "{{version}}"],
-        "dockerPlatform": ["linux/amd64"],
-        "dockerPublish": true
+        "dockerPlatform": ["linux/amd64", "linux/arm64"],
+        "dockerPublish": true,
+        "dockerTimeout": 1800000
       }
     ],
     [
