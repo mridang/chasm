@@ -85,11 +85,11 @@ jobs:
           # at the same repo secrets.
           DOCKER_REGISTRY_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
-          # semantic-release-cargo's verifyConditions requires this env var to
-          # be set, even when every crate has `publish = false` in Cargo.toml.
-          # The value is never used because no crate is published to crates.io;
-          # a dummy placeholder satisfies the verification step.
-          CARGO_REGISTRY_TOKEN: not-publishing-to-crates-io
+          # semantic-release-cargo's verifyConditions requires this token to
+          # be present. With every crate currently `publish = false`, the
+          # token is verified but not used; once any crate flips to
+          # publishable the same token gates the cargo publish.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       # Cosign keyless signing of the just-pushed image. We only sign when a
       # release was actually cut. Each tag listed in .releaserc.json
