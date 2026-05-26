@@ -5,6 +5,7 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
+    "semantic-release-cargo",
     [
       "@mridang/semantic-release-oci",
       {
@@ -25,6 +26,12 @@
     [
       "@semantic-release/git",
       {
+        "assets": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "crates/*/Cargo.toml",
+          "CHANGELOG.md"
+        ],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ]
