@@ -48,7 +48,15 @@ RUN RUST_TARGET="$(cat /rust-target)" \
  && (upx --lzma --best /chasm-server \
        || echo "WARNING: upx compression failed, shipping uncompressed binary")
 
-FROM scratch
+# Export stage: nothing but the binary. The bake `binaries` target builds this
+# with `--output type=local`, dropping the per-arch binary onto the host for
+# attachment as GitHub release assets. Never pushed.
+FROM scratch AS export
+COPY --from=builder /chasm-server /chasm-server
+
+# Runtime stage: the published container image. Last stage, so a plain
+# `docker build` and the dev bake targets default to it.
+FROM scratch AS runtime
 # OCI image-spec labels so registries (and downstream scanners) can link the
 # image back to its source, license, and project metadata. Keep these in sync
 # with `[workspace.package]` in the root Cargo.toml.

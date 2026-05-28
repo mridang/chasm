@@ -13,15 +13,21 @@
         "dockerProject": "mridang",
         "dockerImage": "chasm",
         "dockerTags": ["latest", "{{major}}", "{{version}}"],
-        "dockerPlatform": ["linux/amd64", "linux/arm64"],
-        "dockerPublish": true,
-        "dockerTimeout": 3600000
+        "dockerTimeout": 3600000,
+        "dockerBake": {
+          "file": "docker-bake.hcl",
+          "group": "release",
+          "imageTarget": "image"
+        }
       }
     ],
     [
       "@semantic-release/github",
       {
-        "assets": []
+        "assets": [
+          { "path": "dist/linux_amd64/chasm-server", "label": "chasm-server-linux-amd64" },
+          { "path": "dist/linux_arm64/chasm-server", "label": "chasm-server-linux-arm64" }
+        ]
       }
     ],
     [
