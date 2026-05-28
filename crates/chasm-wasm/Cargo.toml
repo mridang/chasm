@@ -28,4 +28,18 @@ uuid = { version = "1", features = ["v4", "js"] }
 getrandom = { version = "0.2", features = ["js"] }
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ['-O3', '--enable-bulk-memory']
+# Recent stable Rust emits these WebAssembly features by default for the
+# wasm32 target (reference-types and multivalue became default in 1.82; the
+# others have been default for longer). wasm-opt's validator rejects the
+# module unless each used feature is explicitly enabled, otherwise the
+# optimisation pass fails with "unexpected false: all used features should be
+# allowed". Keep this list in step with the toolchain's wasm defaults.
+wasm-opt = [
+    '-O3',
+    '--enable-bulk-memory',
+    '--enable-reference-types',
+    '--enable-multivalue',
+    '--enable-sign-ext',
+    '--enable-nontrapping-float-to-int',
+    '--enable-mutable-globals',
+]
