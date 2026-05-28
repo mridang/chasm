@@ -1,28 +1,13 @@
 name: Release
+
 on:
   push:
     branches:
       - master
 
-# Serialize releases on the same ref so two pushes to master cannot race the
-# semantic-release tag/version state. We do NOT cancel-in-progress: a release
-# must always finish (tag + publish) before the next attempt starts.
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
-  # Required for cosign keyless signing via the GitHub Actions OIDC token.
-  # Sigstore exchanges this for a short-lived signing certificate; no
-  # long-lived signing keys are stored in the repo.
   id-token: write
-
-# Supply-chain hardening: cosign keyless signing of published OCI images is
-# wired in below. SBOM generation + cosign attestation now runs after signing
-# via anchore/sbom-action; see the "Generate SBOM" and "Attest SBOM" steps.
 
 defaults:
   run:
@@ -30,107 +15,40 @@ defaults:
 
 jobs:
   publish-package:
-    name: semantic-release
     runs-on: ubuntu-latest
-    outputs:
-      released: ${{ steps.semantic-release.outputs.new-release-published }}
-      version: ${{ steps.semantic-release.outputs.new-release-version }}
-      major: ${{ steps.semantic-release.outputs.new-release-major-version }}
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        uses: actions/setup-node@v5
         with:
           node-version: 'lts/*'
 
-      # semantic-release-cargo runs `cargo set-version` on the runner during
-      # its prepare step to bump the workspace version. That needs cargo on the
-      # runner, but NOT a cross-compile target or musl linker — the binary is
-      # built inside the Dockerfile via cargo-zigbuild, which carries its own
-      # toolchain. No QEMU either: zigbuild cross-compiles, it does not emulate.
+      # chasm is a Rust workspace: the semantic-release-cargo plugin runs
+      # `cargo set-version` on the runner during its prepare step, so cargo
+      # must be present. The image itself is built inside the Dockerfile via
+      # cargo-zigbuild, which carries its own toolchain (no cross target or
+      # musl linker needed here, and no QEMU — zigbuild cross-compiles).
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        uses: dtolnay/rust-toolchain@stable
 
+      # Multi-platform `docker buildx build` (run internally by
+      # @mridang/semantic-release-oci) needs a container-driver builder; the
+      # default docker driver cannot emit a multi-arch manifest.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+        uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # TODO(supply-chain): mridang/action-semantic-release is a single-maintainer
-      # action. Migrate to cycjimmy/semantic-release-action (multi-maintainer,
-      # better audit posture) once configuration parity is verified.
       - name: Run semantic-release
-        id: semantic-release
-        uses: mridang/action-semantic-release@c8f803e07a9e6b6329d34329da07c1df9fa72753  # v2.2.1
+        uses: mridang/action-semantic-release@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          # @mridang/semantic-release-oci uses DOCKER_REGISTRY_USER /
-          # DOCKER_REGISTRY_PASSWORD (different naming than docker/login-action
-          # above, which uses DOCKERHUB_USERNAME / DOCKERHUB_TOKEN). Both point
-          # at the same repo secrets.
+          # @mridang/semantic-release-oci performs `docker login` itself using
+          # these; no separate docker/login-action step is needed.
           DOCKER_REGISTRY_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
-          # semantic-release-cargo's verifyConditions requires this token to
-          # be present. With every crate currently `publish = false`, the
-          # token is verified but not used; once any crate flips to
-          # publishable the same token gates the cargo publish.
+          # semantic-release-cargo's verifyConditions requires this token. With
+          # every crate `publish = false` it is verified but not used.
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      # Cosign keyless signing of the just-pushed image. We only sign when a
-      # release was actually cut. Each tag listed in .releaserc.json
-      # (`latest`, `{{major}}`, `{{version}}`) is signed; `cosign sign` resolves
-      # each tag to its digest and signs the digest, so the tag re-pointing
-      # later cannot invalidate the signature retroactively.
-      - name: Install cosign
-        if: steps.semantic-release.outputs.new-release-published == 'true'
-        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a  # v3.8.1
-
-      - name: Sign published OCI images with cosign
-        if: steps.semantic-release.outputs.new-release-published == 'true'
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-          IMAGE: docker.io/mridang/chasm
-          VERSION: ${{ steps.semantic-release.outputs.new-release-version }}
-          MAJOR: ${{ steps.semantic-release.outputs.new-release-major-version }}
-        run: |
-          set -euo pipefail
-          for tag in "${VERSION}" "${MAJOR}" "latest"; do
-            echo "Signing ${IMAGE}:${tag}"
-            cosign sign --yes "${IMAGE}:${tag}"
-          done
-
-      # Install syft via anchore/sbom-action so the subsequent shell step can
-      # invoke `syft` directly per-tag. SHA-pinned to v0.17.9; bump by looking
-      # up the latest release at https://github.com/anchore/sbom-action/releases
-      # and replacing both the SHA and the version comment.
-      - name: Install syft (SBOM generator)
-        if: steps.semantic-release.outputs.new-release-published == 'true'
-        uses: anchore/sbom-action/download-syft@61119d458adab75f756bc0b9e4bde25725f86a7a  # v0.17.9
-
-      # Generate an SPDX-JSON SBOM for each published tag and attest it against
-      # the image digest with cosign. `cosign attest` resolves the tag to its
-      # digest before signing, so the attestation binds to the immutable
-      # content even if the tag is later re-pointed. Same OIDC identity used
-      # for keyless image signing above; no long-lived signing keys.
-      - name: Generate + attest SBOMs with cosign
-        if: steps.semantic-release.outputs.new-release-published == 'true'
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-          IMAGE: docker.io/mridang/chasm
-          VERSION: ${{ steps.semantic-release.outputs.new-release-version }}
-          MAJOR: ${{ steps.semantic-release.outputs.new-release-major-version }}
-        run: |
-          set -euo pipefail
-          for tag in "${VERSION}" "${MAJOR}" "latest"; do
-            echo "Generating SBOM for ${IMAGE}:${tag}"
-            syft "${IMAGE}:${tag}" -o spdx-json="sbom-${tag}.json"
-            echo "Attesting SBOM for ${IMAGE}:${tag}"
-            cosign attest --yes --predicate "sbom-${tag}.json" --type spdx "${IMAGE}:${tag}"
-          done
