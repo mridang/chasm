@@ -25,8 +25,8 @@
       "@semantic-release/github",
       {
         "assets": [
-          { "path": "dist/linux_amd64/chasm-server", "label": "chasm-server-linux-amd64" },
-          { "path": "dist/linux_arm64/chasm-server", "label": "chasm-server-linux-arm64" }
+          { "path": "dist/linux_amd64/chasm-server", "name": "chasm-server-linux-amd64", "label": "chasm-server (linux/amd64)" },
+          { "path": "dist/linux_arm64/chasm-server", "name": "chasm-server-linux-arm64", "label": "chasm-server (linux/arm64)" }
         ]
       }
     ],
