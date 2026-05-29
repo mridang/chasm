@@ -434,6 +434,10 @@ fn static_array(
         None => return Value::Array(Vec::new()),
     };
     let min_items = map.get("minItems").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let max_items = map
+        .get("maxItems")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
     let mut out: Vec<Value> = Vec::new();
     if let Some(Value::Array(prefix)) = map.get("prefixItems") {
         for item_schema in prefix {
@@ -445,9 +449,16 @@ fn static_array(
         }
     }
     let item_schema_opt = map.get("items").filter(|v| v.is_object());
+    let mut target = min_items;
+    if opts.always_fake_optionals && item_schema_opt.is_some() {
+        target = target.max(3);
+        if let Some(mx) = max_items {
+            target = target.min(mx);
+        }
+    }
     let empty = Value::Object(serde_json::Map::new());
     let fill_schema = item_schema_opt.unwrap_or(&empty);
-    while out.len() < min_items {
+    while out.len() < target {
         out.push(walk_static(fill_schema, root, opts, visited, depth + 1));
     }
     Value::Array(out)
@@ -480,15 +491,23 @@ fn static_object(
         .and_then(|v| v.as_object())
         .unwrap_or(&empty_props);
     let mut out = serde_json::Map::new();
+    for (key, prop_schema) in properties {
+        let is_required = required.iter().any(|r| r == key);
+        if is_required || opts.always_fake_optionals {
+            out.insert(
+                key.clone(),
+                walk_static(prop_schema, root, opts, visited, depth + 1),
+            );
+        }
+    }
     for key in &required {
-        let prop_schema = properties
-            .get(key)
-            .cloned()
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        out.insert(
-            key.clone(),
-            walk_static(&prop_schema, root, opts, visited, depth + 1),
-        );
+        if !out.contains_key(key) {
+            let prop_schema = Value::Object(serde_json::Map::new());
+            out.insert(
+                key.clone(),
+                walk_static(&prop_schema, root, opts, visited, depth + 1),
+            );
+        }
     }
     Value::Object(out)
 }

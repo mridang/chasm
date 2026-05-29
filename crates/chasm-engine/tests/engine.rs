@@ -1121,3 +1121,84 @@ paths:
         serde_json::json!({ "status": "available", "count": 7 })
     );
 }
+
+/// A static-mode response body must include *optional* properties that carry a
+/// property-level `example`, not just the `required` set. A petstore-style `Pet`
+/// whose `id` is optional but declares `example: 10` should surface that value
+/// for Prism parity; dropping it silently makes chasm a non-drop-in replacement.
+#[test]
+fn test_static_body_includes_optional_example_properties() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, photoUrls]
+                properties:
+                  id:
+                    type: integer
+                    example: 10
+                  name:
+                    type: string
+                    example: doggie
+                  photoUrls:
+                    type: array
+                    items: { type: string }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/pets"), &MockConfig::default()).unwrap();
+
+    let obj = resp.body.as_object().expect("object body");
+    assert_eq!(
+        obj.get("id"),
+        Some(&serde_json::json!(10)),
+        "optional example-bearing `id` must be present, got {:?}",
+        resp.body
+    );
+    assert_eq!(obj.get("name"), Some(&serde_json::json!("doggie")));
+}
+
+/// A static-mode array response must synthesise at least one element rather than
+/// collapsing to `[]`. Empty arrays give downstream SDK test harnesses nothing to
+/// deserialise; Prism emits a populated array, so chasm must too.
+#[test]
+fn test_static_body_array_is_non_empty() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: { type: string }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/pets"), &MockConfig::default()).unwrap();
+
+    let arr = resp.body.as_array().expect("array body");
+    assert!(
+        !arr.is_empty(),
+        "static array body must be non-empty, got {:?}",
+        resp.body
+    );
+}

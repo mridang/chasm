@@ -988,6 +988,7 @@ fn generate_from_media_type(
     opts.seed = cfg.seed;
     opts.use_examples_value = true;
     opts.use_default_value = true;
+    opts.always_fake_optionals = true;
     apply_jsf_config(&mut opts, &jsf_config);
     if let Some(v) = cfg.fill_properties {
         opts.fill_properties = v;
