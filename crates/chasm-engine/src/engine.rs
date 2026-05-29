@@ -986,6 +986,8 @@ fn generate_from_media_type(
     let mut opts = GenerateOptions::default();
     opts.max_depth = 5;
     opts.seed = cfg.seed;
+    opts.use_examples_value = true;
+    opts.use_default_value = true;
     apply_jsf_config(&mut opts, &jsf_config);
     if let Some(v) = cfg.fill_properties {
         opts.fill_properties = v;

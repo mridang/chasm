@@ -1048,3 +1048,76 @@ paths:
         "expected integer-shaped value for X-RateLimit-Limit, got {value:?}"
     );
 }
+
+/// A static-mode response body must adopt property-level `example` values when
+/// the schema declares them only on its leaf properties (no media-type
+/// `example`, no `examples` map, no schema-level `example`). Without this the
+/// body collapses to type-zero scalars (`{"id":0,"name":""}`), which diverges
+/// from the example-populated object real clients expect.
+#[test]
+fn test_static_body_uses_property_level_examples() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name]
+                properties:
+                  id:
+                    type: integer
+                    example: 10
+                  name:
+                    type: string
+                    example: doggie
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/pets"), &MockConfig::default()).unwrap();
+
+    assert_eq!(resp.body, serde_json::json!({ "id": 10, "name": "doggie" }));
+}
+
+/// A static-mode response body must adopt property-level `default` values when
+/// the schema declares them only on its leaf properties, mirroring the
+/// example-honouring behaviour for specs that lean on `default` instead.
+#[test]
+fn test_static_body_uses_property_level_defaults() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, count]
+                properties:
+                  status:
+                    type: string
+                    default: available
+                  count:
+                    type: integer
+                    default: 7
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/pets"), &MockConfig::default()).unwrap();
+
+    assert_eq!(
+        resp.body,
+        serde_json::json!({ "status": "available", "count": 7 })
+    );
+}
