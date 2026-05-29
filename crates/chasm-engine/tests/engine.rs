@@ -1202,3 +1202,129 @@ paths:
         resp.body
     );
 }
+
+/// A static-mode response body must emit schema-valid placeholders for
+/// `format`-constrained strings rather than `""`, which strict deserializers
+/// reject. Covers the standard OAS/JSON-Schema formats a real client validates.
+#[test]
+fn test_static_body_formatted_strings_are_schema_valid() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /thing:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [when, day, ref, contact]
+                properties:
+                  when:    { type: string, format: date-time }
+                  day:     { type: string, format: date }
+                  ref:     { type: string, format: uuid }
+                  contact: { type: string, format: email }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/thing"), &MockConfig::default()).unwrap();
+    let obj = resp.body.as_object().expect("object body");
+
+    let when = obj.get("when").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        !when.is_empty() && when.contains('T') && when.ends_with('Z'),
+        "date-time must be a valid RFC-3339 timestamp, got {:?}",
+        obj.get("when")
+    );
+    let day = obj.get("day").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        day.len() == 10 && day.matches('-').count() == 2,
+        "date must be a valid full-date, got {:?}",
+        obj.get("day")
+    );
+    let r = obj.get("ref").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        r.len() == 36 && r.matches('-').count() == 4,
+        "uuid must be a valid UUID, got {:?}",
+        obj.get("ref")
+    );
+    let contact = obj.get("contact").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        contact.contains('@'),
+        "email must contain '@', got {:?}",
+        obj.get("contact")
+    );
+}
+
+/// A static-mode response body must synthesise `$ref` schemas to full depth: a
+/// nested `$ref` object and arrays of `$ref` reached below the top level must be
+/// fully populated, never `{}` or `[null, ...]`, so strict clients can deserialize.
+#[test]
+fn test_static_body_nested_refs_synthesized_to_full_depth() {
+    let yaml = r#"
+openapi: 3.0.3
+info: { title: repro, version: 1.0.0 }
+paths:
+  /passport:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Passport' }
+components:
+  schemas:
+    Tag:
+      type: object
+      properties:
+        id:   { type: integer, example: 1 }
+        name: { type: string, example: tag1 }
+    Pet:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: doggie }
+        tags: { type: array, items: { $ref: '#/components/schemas/Tag' } }
+    Passport:
+      type: object
+      properties:
+        issuedAt: { type: string, format: date-time }
+        pet:      { $ref: '#/components/schemas/Pet' }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(
+        &spec,
+        &common::req("GET", "/passport"),
+        &MockConfig::default(),
+    )
+    .unwrap();
+    let obj = resp.body.as_object().expect("object body");
+
+    let issued = obj.get("issuedAt").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!issued.is_empty(), "issuedAt must be a valid date-time");
+
+    let pet = obj
+        .get("pet")
+        .and_then(|v| v.as_object())
+        .expect("nested pet object");
+    let tags = pet
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .expect("nested tags array");
+    assert!(!tags.is_empty(), "nested tags array must be non-empty");
+    assert!(
+        tags.iter().all(|t| t.is_object()),
+        "nested $ref array elements must be objects, never null, got {:?}",
+        tags
+    );
+    assert_eq!(
+        tags[0],
+        serde_json::json!({ "id": 1, "name": "tag1" }),
+        "nested Tag must be fully synthesized"
+    );
+}

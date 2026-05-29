@@ -313,7 +313,7 @@ fn walk_static(
         if let Some(resolved) = resolver.resolve(ref_str.as_str(), &mut local_visited) {
             let resolved_owned = resolved.clone();
             visited.push(ref_str.clone());
-            let result = walk_static(&resolved_owned, root, opts, visited, depth + 1);
+            let result = walk_static(&resolved_owned, root, opts, visited, depth);
             visited.pop();
             return result;
         }
@@ -389,7 +389,7 @@ fn walk_static(
     };
 
     match type_str {
-        "string" => Value::String(String::new()),
+        "string" => static_string(map),
         "number" => Value::Number(serde_json::Number::from(0)),
         "integer" => Value::Number(serde_json::Number::from(0)),
         "boolean" => Value::Bool(false),
@@ -459,7 +459,11 @@ fn static_array(
     let empty = Value::Object(serde_json::Map::new());
     let fill_schema = item_schema_opt.unwrap_or(&empty);
     while out.len() < target {
-        out.push(walk_static(fill_schema, root, opts, visited, depth + 1));
+        let element = walk_static(fill_schema, root, opts, visited, depth + 1);
+        if element.is_null() && out.len() >= min_items {
+            break;
+        }
+        out.push(element);
     }
     Value::Array(out)
 }
@@ -510,6 +514,52 @@ fn static_object(
         }
     }
     Value::Object(out)
+}
+
+/// Builds a static string value, honouring a declared `format` with a canonical,
+/// schema-valid placeholder so strict deserializers never receive an empty string
+/// for a `format`-constrained field. Unrecognised formats (and formats that are
+/// pure annotations a client never validates) fall back to the empty string.
+fn static_string(map: &serde_json::Map<String, Value>) -> Value {
+    if let Some(Value::String(fmt)) = map.get("format") {
+        if let Some(canonical) = canonical_format_value(fmt.as_str()) {
+            return Value::String(canonical.to_string());
+        }
+    }
+    Value::String(String::new())
+}
+
+/// Returns a deterministic, schema-valid placeholder for a standard OAS/JSON-Schema
+/// string `format`, or `None` if the format has no canonical static representation.
+///
+/// Values are intentionally fixed (not RNG-derived) to keep static generation
+/// deterministic; they use documentation-reserved ranges (RFC 5737/3849) where
+/// applicable so the output is unambiguously a placeholder.
+fn canonical_format_value(format: &str) -> Option<&'static str> {
+    let value = match format {
+        "date-time" | "datetime" | "iso-date-time" => "2020-01-01T00:00:00Z",
+        "date" | "iso-date" | "full-date" => "2020-01-01",
+        "time" | "partial-time" => "00:00:00Z",
+        "duration" => "P1D",
+        "uuid" | "uuid1" | "uuid3" | "uuid4" | "uuid5" | "guid" => {
+            "00000000-0000-4000-8000-000000000000"
+        }
+        "email" | "idn-email" => "user@example.com",
+        "uri" | "url" | "uri-reference" | "iri" | "iri-reference" => "https://example.com",
+        "uri-template" => "https://example.com/{id}",
+        "hostname" | "idn-hostname" => "example.com",
+        "ipv4" => "192.0.2.0",
+        "ipv6" => "2001:db8::",
+        "json-pointer" => "/example",
+        "relative-json-pointer" => "0",
+        "byte" => "ZXhhbXBsZQ==",
+        "base64url" => "ZXhhbXBsZQ",
+        "binary" => "binary",
+        "password" => "password",
+        "hex-color" => "#000000",
+        _ => return None,
+    };
+    Some(value)
 }
 
 /// Returns the depth-cutoff terminal value for a schema in static mode.
