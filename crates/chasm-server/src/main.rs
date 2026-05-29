@@ -1665,10 +1665,10 @@ async fn handle_request_inner(
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("if-none-match"))
         .map(|(_, v)| v.clone());
-    let content_type_main = headers
+    let content_type_full = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-        .and_then(|(_, v)| v.split(';').next().map(|s| s.trim().to_ascii_lowercase()));
+        .map(|(_, v)| v.clone());
     let (parts, body_stream) = req.into_parts();
     let buffered = match axum::body::to_bytes(body_stream, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -1690,7 +1690,7 @@ async fn handle_request_inner(
         }
     };
     let req = Request::from_parts(parts, Body::from(buffered));
-    let body = read_optional_json_body(req, content_type_main.as_deref()).await;
+    let body = read_optional_json_body(req, content_type_full.as_deref()).await;
 
     let mock_req = {
         let mut __r = MockRequest::default();
@@ -2365,8 +2365,13 @@ fn validation_errors_to_json(errors: &[ValidationError]) -> Vec<serde_json::Valu
 /// keys appearing multiple times become arrays and all values stay strings,
 /// matching the conventional form-body parsing).
 ///
-/// For non-JSON, non-form bodies whose content-type is `multipart/form-data`,
-/// `application/octet-stream`, or any `text/*` variant, this returns a
+/// For `multipart/form-data`, the body is parsed into a JSON object keyed by
+/// part name (via the engine's `parse_request_body_for_validation`, which needs
+/// the full content-type so it can read the multipart boundary) so that
+/// required-part validation can run against the declared schema. If parsing
+/// fails, it falls back to the presence placeholder described below.
+///
+/// For `application/octet-stream` or any `text/*` variant, this returns a
 /// placeholder `Value::String("<binary {content-type}>")` rather than `None`.
 /// The placeholder signals to body validation that a body was supplied — so a
 /// `required: true` body annotation cannot falsely fail with a "body is
@@ -2381,18 +2386,25 @@ async fn read_optional_json_body(
     req: Request<Body>,
     content_type: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let ct = content_type?;
+    let ct_full = content_type?;
+    let ct = ct_full
+        .split(';')
+        .next()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
     let body = req.into_body();
     let bytes = axum::body::to_bytes(body, usize::MAX).await.ok()?;
     if bytes.is_empty() {
         return None;
     }
-    match ct {
+    match ct.as_str() {
         "application/json" => serde_json::from_slice(&bytes).ok(),
         "application/x-www-form-urlencoded" => Some(parse_form_urlencoded_to_json(bytes.as_ref())),
-        "multipart/form-data" | "application/octet-stream" => {
-            Some(serde_json::Value::String(format!("<binary {}>", ct)))
+        "multipart/form-data" => {
+            chasm_engine::validation::parse_request_body_for_validation(ct_full, bytes.as_ref())
+                .or_else(|| Some(serde_json::Value::String(format!("<binary {}>", ct))))
         }
+        "application/octet-stream" => Some(serde_json::Value::String(format!("<binary {}>", ct))),
         other if other.starts_with("text/") => {
             Some(serde_json::Value::String(format!("<binary {}>", other)))
         }
@@ -4359,5 +4371,80 @@ paths:
             .await
             .expect("collect");
         assert!(bytes.is_empty(), "ETag-match 304 body must be empty");
+    }
+
+    /// A multipart request body submitted to the live router is parsed into a
+    /// JSON object keyed by its part names, so required-part validation can run
+    /// against it. A string placeholder would make `validate_required_only`
+    /// short-circuit and silently skip the check.
+    #[tokio::test]
+    async fn test_read_multipart_body_yields_field_name_object() {
+        use axum::http::Request as HttpRequest;
+
+        let raw = b"--xx\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n\r\nBINARYDATA\r\n--xx\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhello\r\n--xx--\r\n";
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("content-type", "multipart/form-data; boundary=xx")
+            .body(Body::from(&raw[..]))
+            .expect("request");
+
+        let body = read_optional_json_body(request, Some("multipart/form-data; boundary=xx")).await;
+
+        let obj = body.as_ref().and_then(|v| v.as_object()).expect("object");
+        assert!(obj.contains_key("file") && obj.contains_key("caption"));
+    }
+
+    /// A multipart upload missing a required part is rejected with a 422 when
+    /// validation is enabled, matching the behaviour for JSON and form bodies.
+    #[tokio::test]
+    async fn test_multipart_missing_required_part_returns_422() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /upload:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, caption]
+              properties:
+                file: { type: string, format: binary }
+                caption: { type: string }
+      responses:
+        '200': { description: ok }
+"#;
+        let spec = load_spec(yaml).expect("spec");
+        let state = AppState {
+            spec: Arc::new(RwLock::new(Arc::new(spec))),
+            default_cfg: Arc::new({
+                let mut cfg = MockConfig::default();
+                cfg.errors = true;
+                cfg
+            }),
+            metrics: Arc::new(Metrics::default()),
+            last_reload_error: Arc::new(Mutex::new(None)),
+            log_format: LogFormat::Text,
+        };
+        let app = build_router(state, true);
+
+        let raw = b"--xx\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n\r\nBINARYDATA\r\n--xx--\r\n";
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("content-type", "multipart/form-data; boundary=xx")
+            .body(Body::from(&raw[..]))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
