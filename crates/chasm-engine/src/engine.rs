@@ -326,6 +326,17 @@ pub fn mock(
             },
         })?;
 
+    if response.content.is_empty() {
+        let headers = collect_response_headers(spec, response, &effective);
+        tracing::debug!(status, "response declares no content; emitting empty body");
+        return Ok(MockResponse {
+            status,
+            content_type: String::new(),
+            body: Value::Null,
+            headers,
+        });
+    }
+
     let content_type = match negotiate_content_type(&response.content, &req.headers) {
         ContentNegotiation::Selected(ct) => ct,
         ContentNegotiation::NotAcceptable(acceptable) => {

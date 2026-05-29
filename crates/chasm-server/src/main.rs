@@ -1723,8 +1723,10 @@ async fn handle_request_inner(
                     status
                 );
             }
-            let suppress_body =
-                bodyless_status || method == Method::HEAD || method == Method::OPTIONS;
+            let suppress_body = bodyless_status
+                || method == Method::HEAD
+                || method == Method::OPTIONS
+                || content_type.is_empty();
             let body_str = if suppress_body {
                 String::new()
             } else {
@@ -1735,7 +1737,10 @@ async fn handle_request_inner(
             } else {
                 content_type.clone()
             };
-            let etag = if response_body_is_stable(&cfg) && status_code.is_success() {
+            let etag = if response_body_is_stable(&cfg)
+                && status_code.is_success()
+                && !content_type.is_empty()
+            {
                 Some(compute_etag(body_str.as_bytes()))
             } else {
                 None
@@ -1799,6 +1804,8 @@ async fn handle_request_inner(
                 resp.headers_mut().remove(axum::http::header::CONTENT_TYPE);
                 resp.headers_mut()
                     .remove(axum::http::header::CONTENT_LENGTH);
+            } else if content_type.is_empty() {
+                resp.headers_mut().remove(axum::http::header::CONTENT_TYPE);
             }
             if let Some(tag) = etag {
                 if let Ok(v) = HeaderValue::try_from(tag.as_str()) {
@@ -2984,6 +2991,55 @@ paths:
         assert!(
             !title.is_empty() && !detail.is_empty(),
             "expected non-empty title and detail, got title={title:?}, detail={detail:?}"
+        );
+    }
+
+    /// A response declared with no `content:` block must produce a truly empty
+    /// body (`Content-Length: 0`, no `application/json` content-type) rather
+    /// than the JSON token `null`. Strict deserializers such as
+    /// `kotlinx.serialization` reject a `null` body where the spec promised no
+    /// content, so the mock must not emit one.
+    #[tokio::test]
+    async fn test_contentless_response_has_empty_body_and_no_content_type() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /pet/{petId}:
+    delete:
+      parameters:
+        - { name: petId, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Pet deleted
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("DELETE")
+            .uri("/pet/1")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .is_none(),
+            "contentless response must not advertise a content-type, got {:?}",
+            response.headers().get(axum::http::header::CONTENT_TYPE)
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect");
+        assert!(
+            bytes.is_empty(),
+            "contentless response must have an empty body, got {:?}",
+            String::from_utf8_lossy(&bytes)
         );
     }
 
