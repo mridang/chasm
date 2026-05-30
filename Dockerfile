@@ -5,7 +5,7 @@
 # compiler, so no QEMU emulation is involved — the arm64 image is built at
 # native speed on an amd64 host. Base image pinned by digest; the readable
 # `1.95-alpine` tag is kept for reviewers.
-FROM --platform=$BUILDPLATFORM rust:1.95-alpine@sha256:606fd313a0f49743ee2a7bd49a0914bab7deedb12791f3a846a34a4711db7ed2 AS builder
+FROM --platform=$BUILDPLATFORM rust:1.96-alpine@sha256:66f48b19d6e88519e2e58bebe0d945779a6a4ca41c2db17db78c9569655b50ac AS builder
 
 # Docker buildx injects TARGETARCH automatically ("amd64" or "arm64").
 ARG TARGETARCH
