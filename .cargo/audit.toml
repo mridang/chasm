@@ -1,0 +1,16 @@
+[advisories]
+ignore = [
+    # serde_yaml 0.9 was deprecated by its author in Dec 2024 (unmaintained,
+    # no security defect). chasm pulls it through serde_yaml directly and via
+    # openapiv3. Migration to serde_yml (the maintained community fork) is
+    # tracked in CONTRIBUTING.md under "Security advisories"; until that lands
+    # we accept the unmaintained advisory rather than masking it silently.
+    "RUSTSEC-2024-0320",
+    # rustls-pemfile 2.2.0 was marked unmaintained in 2025 (its PEM parsing
+    # moved into rustls-pki-types; no security defect). chasm does not depend on
+    # it directly: it arrives transitively through axum-server's `tls-rustls`
+    # feature, which we need for `--tls-cert`/`--tls-key` termination. There is
+    # no clean way to drop it without forking axum-server's PEM loader, so we
+    # accept the unmaintained advisory in-band here rather than masking it.
+    "RUSTSEC-2025-0134",
+]

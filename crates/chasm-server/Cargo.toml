@@ -22,7 +22,7 @@ chasm-engine = { path = "../chasm-engine" }
 axum = { version = "0.7", features = ["http2"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "time"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -35,6 +35,9 @@ percent-encoding = { workspace = true }
 notify = "6"
 uuid = { version = "1", features = ["v4"] }
 blake3 = "1"
+flate2 = "1"
+brotli = "7"
+zstd = "0.13"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

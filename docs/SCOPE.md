@@ -12,8 +12,8 @@ These are implemented today and considered stable.
   `--cors-max-age`, `--cors-expose-headers`, `--errors`, `--seed`,
   `--ignore-examples`, `--json-schema-faker-fill-properties`, `--verbose`,
   `--watch`, `--dry-run`, `--expose-spec`, `--max-connections`,
-  `--strict-method-matching`, `--tls-cert`, `--tls-key`, `--log-format`,
-  and `--request-timeout`.
+  `--strict-method-matching`, `--tls-cert`, `--tls-key`, `--tls-port`,
+  `--log-format`, and `--request-timeout`.
 
   **`--expose-spec` disclosure risk.** `--expose-spec` defaults to `true`,
   which mounts `/openapi.{json,yaml}` and world-publishes the loaded spec
@@ -23,7 +23,10 @@ These are implemented today and considered stable.
   endpoint, or set `--expose-spec=false` for production-facing deployments.
 - **HTTPS termination.** Supply `--tls-cert` and `--tls-key` (PEM-encoded
   chain + key) to terminate TLS in-process via `rustls`; both flags must
-  be set together or both omitted.
+  be set together or both omitted. When TLS is enabled, chasm serves plain
+  HTTP on `--port` and HTTPS on `--tls-port` (default `8443`)
+  simultaneously, so a single process answers both schemes; the two ports
+  must differ.
 - **HTTP/2.** Negotiated automatically via ALPN when TLS is enabled. No
   flag required.
 - **`validate` subcommand.** `chasm-server validate <SPEC>` parses the
@@ -114,6 +117,30 @@ These are implemented today and considered stable.
   echoed back on the response; when absent, a fresh UUIDv4 is generated
   and returned. The same id is attached to the structured log fields for
   every line emitted while handling the request.
+- **WireMock-parity transport behaviours.** Three `x-chasm-*` extensions
+  let a spec drive transport-layer behaviour that SDK test harnesses
+  otherwise need a second mock for:
+  - **`x-chasm-delay-ms: <int>`** — sleeps for the given milliseconds
+    before responding (an async, non-blocking delay). Declared on the
+    operation or the response object; the operation-level value wins.
+  - **`x-chasm-content-encoding: gzip|br|zstd`** — compresses the
+    response body with the named codec and sets `Content-Encoding`
+    accordingly. Declared on the response object. Any other value is
+    ignored. This is the one case where chasm computes `Content-Encoding`
+    itself rather than stripping it (see *Response headers* above), and it
+    skips the negotiated compression layer to avoid double-encoding.
+  - **`x-chasm-echo: true`** — replaces the response body with a JSON
+    envelope reflecting the incoming request (method, path, headers,
+    cookies, body, content length). Declared on the operation.
+- **Multi-value response headers.** A response header whose `example` (or
+  `schema.example`) is a JSON array is emitted as one header line per
+  array element, so `Set-Cookie` / `Link` style multi-valued headers
+  round-trip faithfully.
+- **Faithful status & body emission.** A single declared non-`2xx`
+  response status is emitted verbatim (e.g. a `302` with a `Location`
+  header), `text/*` bodies are emitted as raw text rather than
+  JSON-quoted, and bodyless statuses (`1xx`, `204`, `205`, `304`) send no
+  body.
 - **Request validation (`--errors` / `-e`).** Validates path, query, and
   header parameters as well as JSON request bodies against the operation's
   schemas, including the strict `format:`, `dependentRequired`,

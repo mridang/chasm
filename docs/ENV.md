@@ -21,6 +21,7 @@ explicit CLI flag wins, matching clap's standard precedence rules.
 | `CHASM_REQUEST_TIMEOUT` | `--request-timeout` | `30` | Per-request handler timeout in seconds; on expiry the server emits a `408 Request Timeout` problem+json envelope. |
 | `CHASM_TLS_CERT` | `--tls-cert` | unset | PEM-encoded certificate chain. Pair with `CHASM_TLS_KEY` (or `--tls-key`) to terminate TLS in-process via `rustls`; both must be supplied together or both omitted. |
 | `CHASM_TLS_KEY` | `--tls-key` | unset | PEM-encoded private key paired with `CHASM_TLS_CERT` (or `--tls-cert`); both must be supplied together or both omitted. |
+| `CHASM_TLS_PORT` | `--tls-port` | `8443` | HTTPS port used when TLS is enabled. Plain HTTP (`--port`) and HTTPS (`--tls-port`) are served simultaneously; the two ports must differ. |
 
 If `RUST_LOG` is set, its directives win over the level derived from
 `--verbose`. Unset it (or unset both) to fall back to `info`.

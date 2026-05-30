@@ -1328,3 +1328,186 @@ components:
         "nested Tag must be fully synthesized"
     );
 }
+
+/// `x-chasm-delay-ms` on the operation is surfaced as `MockResponse::delay_ms`
+/// so the transport layer can stall the response.
+#[test]
+fn test_delay_ms_read_from_operation() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /slow:
+    get:
+      x-chasm-delay-ms: 250
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/slow"), &MockConfig::default()).unwrap();
+
+    assert_eq!(resp.delay_ms, Some(250));
+}
+
+/// When the operation omits `x-chasm-delay-ms` the response-level value is used
+/// as a fallback.
+#[test]
+fn test_delay_ms_falls_back_to_response_level() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /slow:
+    get:
+      responses:
+        '200':
+          description: ok
+          x-chasm-delay-ms: 75
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/slow"), &MockConfig::default()).unwrap();
+
+    assert_eq!(resp.delay_ms, Some(75));
+}
+
+/// The operation-level `x-chasm-delay-ms` takes precedence over a response-level
+/// one when both are present.
+#[test]
+fn test_delay_ms_operation_takes_precedence() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /slow:
+    get:
+      x-chasm-delay-ms: 10
+      responses:
+        '200':
+          description: ok
+          x-chasm-delay-ms: 999
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("GET", "/slow"), &MockConfig::default()).unwrap();
+
+    assert_eq!(resp.delay_ms, Some(10));
+}
+
+/// A recognised `x-chasm-content-encoding` token is surfaced; an unknown codec
+/// is dropped to `None` so the server never advertises an encoding it cannot
+/// apply.
+#[test]
+fn test_content_encoding_recognised_and_rejected() {
+    let valid = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /z:
+    get:
+      responses:
+        '200':
+          description: ok
+          x-chasm-content-encoding: zstd
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(valid).unwrap();
+    let resp = mock(&spec, &common::req("GET", "/z"), &MockConfig::default()).unwrap();
+    assert_eq!(resp.content_encoding, Some("zstd".to_string()));
+
+    let bogus = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /z:
+    get:
+      responses:
+        '200':
+          description: ok
+          x-chasm-content-encoding: snappy
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(bogus).unwrap();
+    let resp = mock(&spec, &common::req("GET", "/z"), &MockConfig::default()).unwrap();
+    assert_eq!(resp.content_encoding, None);
+}
+
+/// `x-chasm-echo: true` raises the `echo` flag and short-circuits body
+/// generation (the engine cannot build the envelope without the raw request).
+#[test]
+fn test_echo_flag_raised() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /echo:
+    post:
+      x-chasm-echo: true
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(&spec, &common::req("POST", "/echo"), &MockConfig::default()).unwrap();
+
+    assert!(resp.echo);
+    assert_eq!(resp.content_type, "application/json");
+}
+
+/// A response header whose example is an array yields one `(name, value)` entry
+/// per element so the server can emit multiple header lines.
+#[test]
+fn test_array_response_header_splits_into_entries() {
+    let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /cookies:
+    get:
+      responses:
+        '200':
+          description: ok
+          headers:
+            Set-Cookie:
+              schema: { type: array, items: { type: string } }
+              example: ["a=1", "b=2"]
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+    let spec = load_spec(yaml).unwrap();
+
+    let resp = mock(
+        &spec,
+        &common::req("GET", "/cookies"),
+        &MockConfig::default(),
+    )
+    .unwrap();
+
+    let cookies: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("Set-Cookie"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+    assert_eq!(cookies, vec!["a=1", "b=2"]);
+}

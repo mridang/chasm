@@ -343,6 +343,19 @@ struct MockArgs {
     /// is a startup error.
     #[arg(long = "tls-key", value_name = "PATH", env = "CHASM_TLS_KEY")]
     tls_key: Option<PathBuf>,
+
+    /// Port for the HTTPS listener when `--tls-cert`/`--tls-key` are supplied.
+    /// chasm then serves plaintext HTTP on `--port` and TLS on this port
+    /// simultaneously, so a single instance can answer both schemes (a common
+    /// requirement when an SDK test harness exercises HTTP and HTTPS paths).
+    /// Must differ from `--port`. Ignored when TLS is not configured.
+    #[arg(
+        long = "tls-port",
+        value_name = "PORT",
+        env = "CHASM_TLS_PORT",
+        default_value_t = 8443
+    )]
+    tls_port: u16,
 }
 
 /// Arguments accepted by the `validate` subcommand.
@@ -858,6 +871,19 @@ async fn run_mock(args: MockArgs) {
     app = apply_timeout_layer(app, Duration::from_secs(args.request_timeout));
 
     if let Some((cert_path, key_path)) = tls_paths {
+        if args.tls_port == args.port {
+            tracing::error!(
+                port = args.port,
+                "--tls-port must differ from --port so HTTP and HTTPS can bind separately"
+            );
+            std::process::exit(2);
+        }
+        let tls_addr: SocketAddr = format!("{}:{}", args.host, args.tls_port)
+            .parse()
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "invalid host/tls-port");
+                std::process::exit(1);
+            });
         install_default_crypto_provider();
         let tls_config =
             match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await
@@ -874,25 +900,36 @@ async fn run_mock(args: MockArgs) {
                 }
             };
         info!(
-            "Listening on https://{} (spec: {}, max_connections: {}, http2: alpn)",
-            addr, spec_path_str, args.max_connections
+            "Listening on http://{} and https://{} (spec: {}, max_connections: {}, http2: alpn)",
+            addr, tls_addr, spec_path_str, args.max_connections
         );
-        let handle = axum_server::Handle::new();
-        let shutdown_handle = handle.clone();
+        let http_handle = axum_server::Handle::new();
+        let tls_handle = axum_server::Handle::new();
+        let shutdown_http = http_handle.clone();
+        let shutdown_tls = tls_handle.clone();
         let graceful_timeout = Duration::from_secs(args.request_timeout.max(1));
         tokio::spawn(async move {
             shutdown_signal().await;
             tracing::info!(
                 timeout_secs = graceful_timeout.as_secs(),
-                "TLS server received shutdown signal; draining in-flight connections"
+                "received shutdown signal; draining in-flight HTTP and HTTPS connections"
             );
-            shutdown_handle.graceful_shutdown(Some(graceful_timeout));
+            shutdown_http.graceful_shutdown(Some(graceful_timeout));
+            shutdown_tls.graceful_shutdown(Some(graceful_timeout));
         });
-        if let Err(e) = axum_server::bind_rustls(addr, tls_config)
-            .handle(handle)
-            .serve(app.into_make_service())
-            .await
-        {
+        let http_app = app.clone();
+        let http_server = axum_server::bind(addr)
+            .handle(http_handle)
+            .serve(http_app.into_make_service());
+        let tls_server = axum_server::bind_rustls(tls_addr, tls_config)
+            .handle(tls_handle)
+            .serve(app.into_make_service());
+        let (http_result, tls_result) = tokio::join!(http_server, tls_server);
+        if let Err(e) = http_result {
+            tracing::error!(error = %e, "HTTP server terminated");
+            std::process::exit(1);
+        }
+        if let Err(e) = tls_result {
             tracing::error!(error = %e, "TLS server terminated");
             std::process::exit(1);
         }
@@ -1689,6 +1726,7 @@ async fn handle_request_inner(
             return resp;
         }
     };
+    let raw_body = buffered.clone();
     let req = Request::from_parts(parts, Body::from(buffered));
     let body = read_optional_json_body(req, content_type_full.as_deref()).await;
 
@@ -1709,10 +1747,19 @@ async fn handle_request_inner(
         Ok(MockResponse {
             status,
             content_type,
-            body,
+            mut body,
             headers,
+            delay_ms,
+            content_encoding,
+            echo,
             ..
         }) => {
+            if let Some(ms) = delay_ms {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            if echo {
+                body = build_echo_envelope(&mock_req, &raw_body);
+            }
             let status_code =
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let bodyless_status = is_bodyless_status(status);
@@ -1730,7 +1777,30 @@ async fn handle_request_inner(
             let body_str = if suppress_body {
                 String::new()
             } else {
-                serde_json::to_string(&body).unwrap_or_default()
+                render_response_body(&content_type, &body)
+            };
+            let mut applied_encoding: Option<String> = None;
+            let body_bytes: Vec<u8> = if suppress_body {
+                Vec::new()
+            } else {
+                let identity = body_str.clone().into_bytes();
+                match content_encoding.as_deref() {
+                    Some(token) => match compress_body(token, &identity) {
+                        Ok(compressed) => {
+                            applied_encoding = Some(token.to_string());
+                            compressed
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                encoding = token,
+                                "compression failed; sending identity body"
+                            );
+                            identity
+                        }
+                    },
+                    None => identity,
+                }
             };
             let effective_content_type = if bodyless_status {
                 String::new()
@@ -1740,6 +1810,7 @@ async fn handle_request_inner(
             let etag = if response_body_is_stable(&cfg)
                 && status_code.is_success()
                 && !content_type.is_empty()
+                && applied_encoding.is_none()
             {
                 Some(compute_etag(body_str.as_bytes()))
             } else {
@@ -1787,7 +1858,7 @@ async fn handle_request_inner(
                 start,
             );
             let mut resp = if effective_content_type.is_empty() {
-                (status_code, body_str).into_response()
+                (status_code, body_bytes).into_response()
             } else {
                 (
                     status_code,
@@ -1795,7 +1866,7 @@ async fn handle_request_inner(
                         axum::http::header::CONTENT_TYPE,
                         with_utf8_charset(&effective_content_type),
                     )],
-                    body_str,
+                    body_bytes,
                 )
                     .into_response()
             };
@@ -1806,6 +1877,12 @@ async fn handle_request_inner(
                     .remove(axum::http::header::CONTENT_LENGTH);
             } else if content_type.is_empty() {
                 resp.headers_mut().remove(axum::http::header::CONTENT_TYPE);
+            }
+            if let Some(encoding) = applied_encoding {
+                if let Ok(v) = HeaderValue::try_from(encoding.as_str()) {
+                    resp.headers_mut()
+                        .insert(axum::http::header::CONTENT_ENCODING, v);
+                }
             }
             if let Some(tag) = etag {
                 if let Ok(v) = HeaderValue::try_from(tag.as_str()) {
@@ -2444,6 +2521,97 @@ fn parse_form_urlencoded_to_json(body_bytes: &[u8]) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
+/// Renders a response body `Value` to its wire string for the negotiated
+/// `content_type`.
+///
+/// JSON content types (and anything non-textual) are serialised with
+/// `serde_json`. For textual `text/*` content types a string body is emitted
+/// verbatim rather than JSON-quoted, so a `text/plain` example of `hello world`
+/// reaches the wire as `hello world` and not `"hello world"`. Non-string bodies
+/// under a textual content type still fall back to JSON serialisation.
+fn render_response_body(content_type: &str, body: &serde_json::Value) -> String {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if essence.starts_with("text/") {
+        if let serde_json::Value::String(s) = body {
+            return s.clone();
+        }
+    }
+    serde_json::to_string(body).unwrap_or_default()
+}
+
+/// Compresses `data` with the named codec, returning the encoded bytes.
+///
+/// `encoding` must be one of `gzip`, `br`, or `zstd`; the engine validates the
+/// `x-chasm-content-encoding` extension down to these tokens before it reaches
+/// the server, so an unrecognised codec is treated as identity (the bytes are
+/// returned unchanged). Compression failures surface as `io::Error` so the
+/// caller can fall back to an uncompressed body rather than abort the request.
+fn compress_body(encoding: &str, data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    match encoding {
+        "gzip" => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(data)?;
+            encoder.finish()
+        }
+        "br" => {
+            let mut out = Vec::new();
+            {
+                let mut writer = brotli::CompressorWriter::new(&mut out, 4096, 5, 22);
+                writer.write_all(data)?;
+            }
+            Ok(out)
+        }
+        "zstd" => zstd::stream::encode_all(data, 3),
+        _ => Ok(data.to_vec()),
+    }
+}
+
+/// Builds the request-reflection envelope emitted when an operation carries
+/// `x-chasm-echo: true`.
+///
+/// The envelope is a JSON object mirroring the incoming request so SDK test
+/// harnesses can assert on what they sent: the HTTP method and path, every
+/// request header, the cookies parsed from the `Cookie` header, the raw body
+/// rendered lossily as UTF-8, and the raw body's byte length. The raw bytes are
+/// used (rather than the parsed JSON) so non-JSON and malformed bodies round
+/// trip verbatim.
+fn build_echo_envelope(req: &MockRequest, raw_body: &[u8]) -> serde_json::Value {
+    let mut headers = serde_json::Map::new();
+    for (name, value) in &req.headers {
+        headers.insert(name.clone(), serde_json::Value::String(value.clone()));
+    }
+    let mut cookies = serde_json::Map::new();
+    if let Some((_, cookie_header)) = req
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+    {
+        for pair in cookie_header.split(';') {
+            if let Some((name, value)) = pair.trim().split_once('=') {
+                cookies.insert(
+                    name.trim().to_string(),
+                    serde_json::Value::String(value.trim().to_string()),
+                );
+            }
+        }
+    }
+    serde_json::json!({
+        "method": req.method,
+        "path": req.path,
+        "headers": serde_json::Value::Object(headers),
+        "cookies": serde_json::Value::Object(cookies),
+        "body": String::from_utf8_lossy(raw_body),
+        "contentLength": raw_body.len(),
+    })
+}
+
 /// Returns `true` when `status` is one of the HTTP status codes that RFC 9110
 /// forbids a response body for: 1xx Informational (§15.2), 204 No Content
 /// (§15.3.5), 205 Reset Content (§15.3.6), and 304 Not Modified (§15.4.5).
@@ -3041,6 +3209,312 @@ paths:
             "contentless response must have an empty body, got {:?}",
             String::from_utf8_lossy(&bytes)
         );
+    }
+
+    /// `x-chasm-delay-ms` on an operation must make the transport layer wait
+    /// at least that long before responding, so SDK harnesses can exercise
+    /// client-side timeout and retry behaviour without a second mock server.
+    #[tokio::test]
+    async fn test_delay_ms_extension_delays_response() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /slow:
+    get:
+      x-chasm-delay-ms: 60
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/slow")
+            .body(Body::empty())
+            .expect("request");
+
+        let started = std::time::Instant::now();
+        let response = app.oneshot(request).await.expect("response");
+        let elapsed = started.elapsed();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            elapsed >= Duration::from_millis(50),
+            "x-chasm-delay-ms: 60 must delay the response by at least ~50ms, took {elapsed:?}"
+        );
+    }
+
+    /// `x-chasm-content-encoding: gzip` on a response must make the server
+    /// compress the body, advertise `Content-Encoding: gzip`, and skip the
+    /// (uncompressed-bytes) ETag so caching stays correct.
+    #[tokio::test]
+    async fn test_content_encoding_gzip_compresses_body() {
+        use axum::http::Request as HttpRequest;
+        use std::io::Read as _;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /zip:
+    get:
+      responses:
+        '200':
+          description: ok
+          x-chasm-content-encoding: gzip
+          content:
+            application/json:
+              example: { hello: "world" }
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/zip")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_ENCODING)
+                .map(|v| v.to_str().unwrap_or_default().to_string()),
+            Some("gzip".to_string()),
+            "compressed response must advertise Content-Encoding: gzip"
+        );
+        assert!(
+            response.headers().get(axum::http::header::ETAG).is_none(),
+            "compressed response must not carry an uncompressed-bytes ETag"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect");
+        let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+        let mut decoded = String::new();
+        decoder
+            .read_to_string(&mut decoded)
+            .expect("gzip body decodes");
+        let json: serde_json::Value = serde_json::from_str(&decoded).expect("json");
+        assert_eq!(json, serde_json::json!({ "hello": "world" }));
+    }
+
+    /// `x-chasm-echo: true` on an operation must replace the body with a JSON
+    /// envelope reflecting the incoming request — method, path, headers,
+    /// cookies, raw body, and byte length — so harnesses can assert on exactly
+    /// what they sent.
+    #[tokio::test]
+    async fn test_echo_extension_reflects_request() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /echo:
+    post:
+      x-chasm-echo: true
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object }
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/echo")
+            .header("content-type", "application/json")
+            .header("cookie", "session=abc; theme=dark")
+            .body(Body::from(r#"{"a":1}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect");
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).expect("json envelope");
+        assert_eq!(envelope["method"], "POST");
+        assert_eq!(envelope["path"], "/echo");
+        assert_eq!(envelope["body"], r#"{"a":1}"#);
+        assert_eq!(envelope["contentLength"], 7);
+        assert_eq!(envelope["cookies"]["session"], "abc");
+        assert_eq!(envelope["cookies"]["theme"], "dark");
+    }
+
+    /// A response header whose spec example is an array must be emitted as one
+    /// header line per element (e.g. multiple `Set-Cookie` lines) rather than a
+    /// single comma-joined value, which clients reject for cookies.
+    #[tokio::test]
+    async fn test_multi_value_response_header_splits_into_separate_lines() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /cookies:
+    get:
+      responses:
+        '200':
+          description: ok
+          headers:
+            Set-Cookie:
+              schema: { type: array, items: { type: string } }
+              example: ["a=1", "b=2"]
+          content:
+            application/json:
+              example: { ok: true }
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/cookies")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(
+            cookies,
+            vec!["a=1".to_string(), "b=2".to_string()],
+            "array-valued Set-Cookie header must emit one line per element"
+        );
+    }
+
+    /// When an operation declares exactly one response and it is not `200`,
+    /// chasm must emit that status faithfully (here `418`) rather than
+    /// defaulting to `200`.
+    #[tokio::test]
+    async fn test_single_declared_non_200_status_is_emitted() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /teapot:
+    get:
+      responses:
+        '418':
+          description: short and stout
+          content:
+            application/json:
+              example: { brewing: false }
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/teapot")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
+    }
+
+    /// A `Location` response header on a redirect status must reach the wire so
+    /// clients can follow it; chasm emits the declared status and header
+    /// faithfully.
+    #[tokio::test]
+    async fn test_location_header_emitted_for_redirect() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /old:
+    get:
+      responses:
+        '302':
+          description: moved
+          headers:
+            Location:
+              schema: { type: string }
+              example: "https://example.test/new"
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/old")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("https://example.test/new")
+        );
+    }
+
+    /// A `text/plain` response must be served with a `text/plain` content-type
+    /// and its example body verbatim, not coerced to JSON.
+    #[tokio::test]
+    async fn test_text_plain_response_body() {
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt;
+
+        let yaml = r#"
+openapi: 3.0.0
+info: { title: t, version: 1.0.0 }
+paths:
+  /plain:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            text/plain:
+              example: "hello world"
+"#;
+        let app = build_router(build_test_state(yaml), true);
+        let request = HttpRequest::builder()
+            .method("GET")
+            .uri("/plain")
+            .header("accept", "text/plain")
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            content_type.starts_with("text/plain"),
+            "expected text/plain content-type, got {content_type:?}"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect");
+        assert_eq!(String::from_utf8_lossy(&bytes), "hello world");
     }
 
     /// Builds a minimal `AppState` backed by the supplied YAML spec, for use in

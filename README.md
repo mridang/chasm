@@ -69,6 +69,7 @@ Every response carries an `X-Request-ID` header (either the incoming client valu
 | `--strict-method-matching` | | `false` | `HEAD`/`OPTIONS` on operations that do not declare them return `405` instead of being implicitly served. |
 | `--tls-cert <PATH>` | | | PEM certificate chain. Pair with `--tls-key` to terminate TLS via `rustls`. Also reads `CHASM_TLS_CERT`. |
 | `--tls-key <PATH>` | | | PEM private key paired with `--tls-cert`. Also reads `CHASM_TLS_KEY`. |
+| `--tls-port <PORT>` | | `8443` | HTTPS port when TLS is enabled. Plain HTTP (`--port`) and HTTPS are served at the same time; ports must differ. Also reads `CHASM_TLS_PORT`. |
 | `--log-format <FORMAT>` | | `text` | On-the-wire log format: `text` or `json`. Also reads `CHASM_LOG_FORMAT`. |
 | `--request-timeout <SECONDS>` | | `30` | Per-request handler timeout; on expiry the server emits a `408 Request Timeout` problem+json envelope. Also reads `CHASM_REQUEST_TIMEOUT`. |
 
@@ -102,6 +103,30 @@ curl 'http://localhost:4010/pets?__dynamic=true&__seed=42'
 ```
 
 See [`docs/PREFER_HEADER.md`](docs/PREFER_HEADER.md) for full semantics, precedence, and edge cases.
+
+### Spec extensions (`x-chasm-*`)
+
+These vendor extensions let a spec drive transport-layer behaviours that SDK test harnesses would otherwise need a second mock for (WireMock-style parity).
+
+| Extension | Where | Type | Effect |
+| --- | --- | --- | --- |
+| `x-chasm-delay-ms` | operation or response | int | Sleep this many milliseconds before responding (async, non-blocking). The operation-level value wins over the response-level one. |
+| `x-chasm-content-encoding` | response | `gzip` \| `br` \| `zstd` | Compress the response body with the named codec and set `Content-Encoding`. Any other value is ignored. |
+| `x-chasm-echo` | operation | bool | Replace the response body with a JSON envelope reflecting the incoming request (method, path, headers, cookies, body, content length). |
+
+```yaml
+paths:
+  /pets:
+    get:
+      x-chasm-delay-ms: 250
+      x-chasm-echo: true
+      responses:
+        '200':
+          x-chasm-content-encoding: gzip
+          content:
+            application/json:
+              example: { ok: true }
+```
 
 ### WASM
 
@@ -219,7 +244,6 @@ Long-form reference docs:
 - No `prism.json` config file. Configuration is CLI flags and `CHASM_*` env vars.
 - Operation-level callbacks and links are parsed but ignored.
 - `bearerFormat: JWT` is treated as opaque credentials; chasm does not parse or validate the JWT shape.
-- TLS mode does not yet support graceful shutdown on SIGTERM.
 
 ## Contributing
 

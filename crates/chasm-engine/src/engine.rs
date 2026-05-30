@@ -151,19 +151,41 @@ pub struct MockResponse {
     /// Additional response headers derived from the spec, with hop-by-hop and
     /// framing headers (e.g. `Content-Encoding`, `Content-Length`,
     /// `Transfer-Encoding`, `Date`, `Connection`) stripped because chasm does
-    /// not actually compute them.
+    /// not actually compute them. A spec header whose value is an array yields
+    /// one entry per element, so multi-valued headers (`Set-Cookie`, `Link`)
+    /// are emitted as separate header lines rather than comma-joined.
     pub headers: Vec<(String, String)>,
+    /// Artificial delay, in milliseconds, the transport layer should wait
+    /// before sending the response, sourced from the `x-chasm-delay-ms`
+    /// extension on the operation (preferred) or response. `None` means no
+    /// delay. The engine does not sleep itself; it surfaces the value so the
+    /// async server can delay without blocking other requests.
+    pub delay_ms: Option<u64>,
+    /// Codec the transport layer should use to compress the rendered body,
+    /// sourced from the `x-chasm-content-encoding` extension on the response.
+    /// One of `gzip`, `br`, or `zstd` when set; `None` means identity. The
+    /// server performs the compression and sets the `Content-Encoding` header.
+    pub content_encoding: Option<String>,
+    /// When `true` the operation carries `x-chasm-echo: true`: the transport
+    /// layer must replace the body with an envelope reflecting the incoming
+    /// request (method, path, headers, cookies, raw body, Content-Length).
+    /// The engine cannot build this itself because it lacks the raw request
+    /// bytes, so it only raises the flag.
+    pub echo: bool,
 }
 
 impl Default for MockResponse {
     /// Default response carries a `200 OK` status, `application/json` content-type,
-    /// empty JSON object body, and no extra headers.
+    /// empty JSON object body, and no extra headers, delay, encoding, or echo.
     fn default() -> Self {
         Self {
             status: 200,
             content_type: "application/json".to_string(),
             body: Value::Object(serde_json::Map::new()),
             headers: Vec::new(),
+            delay_ms: None,
+            content_encoding: None,
+            echo: false,
         }
     }
 }
@@ -253,6 +275,9 @@ pub fn mock(
                 content_type: String::new(),
                 body: Value::Null,
                 headers: vec![("Allow".to_string(), allow)],
+                delay_ms: None,
+                content_encoding: None,
+                echo: false,
             });
         }
         RouteMatch::MethodNotAllowed(allow) => {
@@ -326,6 +351,23 @@ pub fn mock(
             },
         })?;
 
+    let delay_ms = read_delay_ms(matched.operation, response);
+    let content_encoding = read_content_encoding(response);
+
+    if read_echo_flag(matched.operation) {
+        let headers = collect_response_headers(spec, response, &effective);
+        tracing::debug!(status, "operation requests request echo");
+        return Ok(MockResponse {
+            status,
+            content_type: "application/json".to_string(),
+            body: Value::Null,
+            headers,
+            delay_ms,
+            content_encoding,
+            echo: true,
+        });
+    }
+
     if response.content.is_empty() {
         let headers = collect_response_headers(spec, response, &effective);
         tracing::debug!(status, "response declares no content; emitting empty body");
@@ -334,6 +376,9 @@ pub fn mock(
             content_type: String::new(),
             body: Value::Null,
             headers,
+            delay_ms,
+            content_encoding,
+            echo: false,
         });
     }
 
@@ -353,7 +398,46 @@ pub fn mock(
         content_type,
         body,
         headers,
+        delay_ms,
+        content_encoding,
+        echo: false,
     })
+}
+
+/// Reads the `x-chasm-delay-ms` extension, an artificial pre-response delay in
+/// milliseconds. The operation-level value takes precedence over the
+/// response-level one. Returns `None` when absent or not a non-negative
+/// integer.
+fn read_delay_ms(operation: &openapiv3::Operation, response: &Response) -> Option<u64> {
+    operation
+        .extensions
+        .get("x-chasm-delay-ms")
+        .or_else(|| response.extensions.get("x-chasm-delay-ms"))
+        .and_then(serde_json::Value::as_u64)
+}
+
+/// Reads the `x-chasm-content-encoding` extension off the response, returning
+/// the codec token only when it names one chasm can apply (`gzip`, `br`,
+/// `zstd`). Any other or absent value yields `None` (identity encoding).
+fn read_content_encoding(response: &Response) -> Option<String> {
+    let token = response
+        .extensions
+        .get("x-chasm-content-encoding")?
+        .as_str()?;
+    match token {
+        "gzip" | "br" | "zstd" => Some(token.to_string()),
+        _ => None,
+    }
+}
+
+/// Reads the `x-chasm-echo` boolean extension off the operation. When `true`
+/// the transport layer replaces the body with a request-reflection envelope.
+fn read_echo_flag(operation: &openapiv3::Operation) -> bool {
+    operation
+        .extensions
+        .get("x-chasm-echo")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Returns true when `name` is a hop-by-hop or framing header the server
@@ -484,7 +568,14 @@ fn collect_response_headers(
         let Some(value) = pick_header_value(spec, header, cfg) else {
             continue;
         };
-        out.push((name.clone(), header_value_to_string(&value)));
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    out.push((name.clone(), header_value_to_string(&item)));
+                }
+            }
+            other => out.push((name.clone(), header_value_to_string(&other))),
+        }
     }
     out
 }

@@ -5,7 +5,8 @@ target/
 *.pdb
 .devbox
 .rustup
-/.cargo/
+/.cargo/*
+!/.cargo/audit.toml
 dist/
 *.swp
 .DS_Store
