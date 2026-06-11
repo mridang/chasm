@@ -9,7 +9,8 @@
   ],
   "env": {
     "CARGO_HOME": "$DEVBOX_PROJECT_ROOT/.cargo",
-    "RUSTUP_HOME": "$DEVBOX_PROJECT_ROOT/.rustup"
+    "RUSTUP_HOME": "$DEVBOX_PROJECT_ROOT/.rustup",
+    "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER": "/usr/bin/cc"
   },
   "shell": {
     "scripts": {
