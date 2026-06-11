@@ -7,14 +7,11 @@
     "darwin.apple_sdk.frameworks.SystemConfiguration",
     "zig@0.13.0"
   ],
+  "env": {
+    "CARGO_HOME": "$DEVBOX_PROJECT_ROOT/.cargo",
+    "RUSTUP_HOME": "$DEVBOX_PROJECT_ROOT/.rustup"
+  },
   "shell": {
-    "init_hook": [
-      "export RUSTUP_HOME=\"$PWD/.rustup\"",
-      "export CARGO_HOME=\"$PWD/.cargo\"",
-      "rustup default stable 2>/dev/null || true",
-      "rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown 2>/dev/null || true",
-      "cargo fetch 2>/dev/null || true"
-    ],
     "scripts": {
       "test": "cargo test --all-features --workspace",
       "test-faker": "cargo test --all-features -p chasm-faker",
